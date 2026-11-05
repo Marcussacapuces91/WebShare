@@ -1,364 +1,226 @@
-# WebShare
-Juste une idée à ce stade, développée avec Copilot
+# 🌐 WebShare
 
-## Prompt de reprise
+> **Gestionnaire de fichiers Web léger pour ESP32-S3 et LittleFS**  
+> Une idée en phase de conception, développée avec Copilot.
 
-Oui, le bloc d’écriture semble ne pas s’être rendu correctement. Je te le remets ci-dessous en texte Markdown normal, directement visible et copiable.
+WebShare vise à rendre les fichiers d’un ESP32 accessibles depuis un navigateur, y compris lorsque l’appareil fonctionne en **Wi-Fi SoftAP sans connexion Internet**. Le projet privilégie une interface de secours toujours disponible et une interface enrichie lorsqu’elle peut être chargée.
 
-Prompt de reprise
+## 🧭 Sommaire
 
-Je souhaite reprendre la conception puis l'implémentation d'un gestionnaire de fichiers Web très léger pour ESP32-S3 + LittleFS, utilisable notamment lorsque l'ESP32 fonctionne en Wi-Fi SoftAP sans accès Internet.
+- [🎯 Objectif](#-objectif)
+- [🗂️ Organisation de LittleFS](#️-organisation-de-littlefs)
+- [🖥️ Interface Web](#️-interface-web)
+- [🔌 Backend HTTP et API](#-backend-http-et-api)
+- [📤 Téléversements fiables](#-téléversements-fiables)
+- [⚡ Performances et concurrence](#-performances-et-concurrence)
+- [🔐 SHA-256](#-sha-256)
+- [📚 Catalogue des fichiers](#-catalogue-des-fichiers)
+- [🕒 Gestion du temps](#-gestion-du-temps)
+- [🧑‍💻 Répartition des responsabilités](#-répartition-des-responsabilités)
+- [👀 Prévisualisation](#-prévisualisation)
+- [🏗️ Architecture cible](#️-architecture-cible)
+- [➡️ Prochaine étape](#️-prochaine-étape)
 
-1. Objectif
+## 🎯 Objectif
 
-Permettre depuis un navigateur Windows/Linux/macOS/mobile de :
+Depuis un navigateur Windows, Linux, macOS ou mobile, l’utilisateur doit pouvoir :
 
-lister les fichiers présents dans LittleFS ;
-télécharger un fichier ;
-uploader un ou plusieurs fichiers ;
-supporter le drag & drop dans l'interface riche ;
-éventuellement prévisualiser certains formats simples ;
-fonctionner sans aucune connexion Internet ;
-disposer d'un mode recovery minimal et robuste.
+- parcourir les fichiers de LittleFS et les télécharger ;
+- téléverser un ou plusieurs fichiers, avec glisser-déposer dans l’interface enrichie ;
+- prévisualiser éventuellement quelques formats courants ;
+- accéder au service sans connexion Internet ;
+- retrouver un mode de secours minimal et robuste.
 
-Nous avons écarté :
+### Choix retenus
 
-USB Mass Storage, car MSC expose un périphérique bloc et ne convient pas directement à LittleFS ;
-WebDAV, jugé inutilement complexe par rapport à notre besoin.
+- **Serveur HTTP + petite WebUI spécialisée** : une solution adaptée au besoin.
+- **Pas d’USB Mass Storage** : MSC expose un périphérique bloc et ne convient pas directement à LittleFS.
+- **Pas de WebDAV** : jugé inutilement complexe pour cette application.
 
-Le choix retenu est donc : serveur HTTP + petite WebUI spécialisée.
+## 🗂️ Organisation de LittleFS
 
-2. LittleFS comme namespace plat
+LittleFS est considéré comme un **espace de noms plat**. Exemples de fichiers :
 
-Considérer LittleFS comme un espace de noms plat.
-
-Exemples :
-
+```text
 /config.json
 /calibration.bin
 /log.txt
 /.sys_app.js.gz
 /.sys_app.css.gz
 /.u_<UUID>
+```
 
-Conventions :
+| Préfixe | Rôle | Interface enrichie | Mode recovery |
+|---|---|---:|---:|
+| `.sys_*` | Ressources système de la WebUI | Masquées normalement | Affichées |
+| `.u_*` | Fichiers temporaires de téléversement | Masqués normalement | Affichés |
+| Autres | Fichiers utilisateur | Affichés | Affichés |
 
-.sys_* = assets système de la WebUI ;
-.u_* = fichiers temporaires d'upload.
+## 🖥️ Interface Web
 
-L'interface riche masque normalement ces fichiers internes.
+### WebUI enrichie dans LittleFS
 
-Le mode recovery les affiche tous.
+Le code client est stocké dans LittleFS afin de pouvoir être mis à jour indépendamment du firmware. Par exemple :
 
-3. WebUI riche stockée dans LittleFS
-
-Le code client riche doit être stocké dans LittleFS pour pouvoir être mis à jour indépendamment du firmware.
-
-Par exemple :
-
+```text
 /.sys_app.js.gz
 /.sys_app.css.gz
+```
 
-Les fichiers sont compressés en gzip avant compilation/déploiement.
+Les ressources sont compressées en gzip avant leur déploiement. L’ESP32 **ne les décompresse pas** : il transmet les octets compressés avec les en-têtes appropriés, et le navigateur les décompresse nativement.
 
-L'ESP32 ne les décompresse jamais. Il transmet directement les octets gzip avec :
-
-Content-Type: application/javascript ou text/css
+```http
+Content-Type: application/javascript
 Content-Encoding: gzip
-Content-Length: taille compressée
+Content-Length: <taille compressée>
+```
 
-Le navigateur fait nativement la décompression.
+Pour le CSS, utiliser `Content-Type: text/css`. Aucune CDN ni ressource Internet ne doit être nécessaire. Privilégier HTML, CSS et JavaScript natifs, sans jQuery ni framework.
 
-Aucune CDN ou ressource Internet ne doit être nécessaire.
+### Page minimale embarquée
 
-Utiliser autant que possible HTML/CSS/JavaScript vanilla, sans JQuery ni framework.
+Le firmware embarque un petit `index.htm`, idéalement en `PROGMEM`. Il sert à la fois de bootstrap, d’interface de secours et d’interface fonctionnelle lorsque JavaScript est désactivé : c’est le principe de **progressive enhancement**.
 
-4. index.htm minimal embarqué avec le firmware
+Même sans JavaScript, cette page doit permettre de :
 
-Le firmware contient en dur, idéalement en PROGMEM, un petit index.htm.
+- lister tous les fichiers, y compris `.sys_*` et `.u_*` ;
+- télécharger chaque fichier avec un lien HTML ;
+- téléverser un ou plusieurs fichiers via un formulaire HTML standard `multipart/form-data`.
 
-Ce fichier joue simultanément le rôle de :
+La liste est générée directement côté ESP32 dans le HTML.
 
-bootstrap de l'application riche ;
-interface de secours ;
-interface fonctionnant lorsque JavaScript est désactivé.
+### Passage à l’interface enrichie
 
-Principe : progressive enhancement.
+Un minuscule bootstrap JavaScript dans `index.htm` tente de charger les ressources suivantes :
 
-Sans JavaScript, cette page permet déjà :
-
-de lister tous les fichiers ;
-de télécharger chaque fichier via un lien HTML ;
-d'uploader un ou plusieurs fichiers avec un formulaire HTML standard multipart/form-data.
-
-La liste des fichiers est générée directement côté ESP32 dans le HTML.
-
-Elle affiche tous les fichiers, sans filtre, y compris .sys_* et .u_*.
-
-5. Passage automatique vers l'interface riche
-
-Si JavaScript fonctionne, un bootstrap JS minuscule contenu dans index.htm tente de charger :
-
+```text
 /.sys_app.js.gz
 /.sys_app.css.gz
+```
 
-Si le chargement et l'initialisation fonctionnent, le JS transforme/prend possession du DOM et affiche l'interface riche.
+L’interface riche ne prend le relais qu’après son initialisation réussie. **Ne jamais masquer ni supprimer l’interface de secours avant cette confirmation.**
 
-Ne jamais supprimer ou masquer l'interface recovery tant que l'application riche n'est pas correctement initialisée.
+| Situation | Comportement attendu |
+|---|---|
+| JavaScript désactivé | Interface minimale |
+| LittleFS vide | Interface minimale |
+| `/.sys_app.js.gz` absent ou invalide | Interface minimale |
+| Application riche initialisée correctement | Interface enrichie |
 
-Donc :
+Une option `/?recovery=1` peut forcer le mode minimal et empêcher le démarrage de l’interface enrichie.
 
-JS désactivé → interface minimale ;
-LittleFS vide → interface minimale ;
-.sys_app.js.gz absent → interface minimale ;
-JS corrompu → interface minimale ;
-application riche correctement initialisée → interface riche.
+## 🔌 Backend HTTP et API
 
-Prévoir éventuellement :
+L’interface enrichie et le fallback doivent utiliser autant que possible le **même backend**. Les fonctions prévues sont :
 
-/?recovery=1
+- liste et téléchargement de fichiers ;
+- téléversement et, éventuellement, suppression depuis l’interface riche ;
+- informations sur LittleFS et le système ;
+- synchronisation temporelle.
 
-pour forcer le mode minimal et empêcher le démarrage de l'UI riche.
+Le fallback peut utiliser `multipart/form-data`. L’interface enrichie peut utiliser des téléversements `PUT` en streaming, plus simples et performants. Les deux chemins convergent vers le même moteur transactionnel.
 
-6. Backend HTTP unique
+## 📤 Téléversements fiables
 
-La WebUI riche et le fallback doivent utiliser le même moteur backend autant que possible.
+Ne jamais écrire directement dans le fichier de destination. Chaque téléversement suit une transaction :
 
-Fonctions :
+1. Générer un UUID ou un identifiant aléatoire de 64 bits.
+2. Créer un fichier temporaire, par exemple `/.u_91A72F730D8B3A11`.
+3. Recevoir le flux HTTP et écrire progressivement dans ce fichier.
+4. Vérifier la fin du transfert et, si elle est connue, la taille attendue.
+5. Appeler `flush()`, puis fermer le fichier.
+6. Renommer le temporaire vers sa destination et mettre à jour le catalogue RAM.
 
-listing ;
-download ;
-upload ;
-delete éventuellement dans l'UI riche ;
-informations LittleFS ;
-synchronisation temporelle ;
-informations système.
+En cas de coupure réseau ou de redémarrage, la version précédente du fichier de destination doit rester intacte. Les fichiers temporaires résiduels peuvent être repérés et supprimés au démarrage. Il faut également définir une stratégie pour les téléversements simultanés vers le même nom.
 
-Le fallback peut utiliser multipart/form-data.
+## ⚡ Performances et concurrence
 
-La WebUI riche peut utiliser des uploads PUT streaming plus simples et performants.
+Une piste consiste à utiliser deux buffers PSRAM par téléversement : **2 × 32 Kio** ou **2 × 64 Kio**. L’architecture peut s’appuyer sur :
 
-Les deux doivent converger vers le même moteur interne d'upload transactionnel.
+- plusieurs producteurs HTTP et sessions de téléversement ;
+- le double buffering ;
+- des files FreeRTOS bornées ;
+- une contre-pression (*back-pressure*) lorsque les buffers sont occupés ;
+- un seul writer LittleFS sérialisé.
 
-7. Uploads transactionnels
+Les deux cœurs de l’ESP32-S3 peuvent découpler le réseau du stockage, mais les écritures Flash ne doivent pas être parallélisées : **Flash et LittleFS restent le goulot d’étranglement partagé.**
 
-Ne jamais écrire directement dans le fichier destination.
+## 🔐 SHA-256
 
-Pour chaque upload :
+Le SHA-256 n’est pas requis pour l’intégrité normale de HTTP/TCP : TCP gère le transport, l’ordre, les retransmissions et la détection des erreurs de transmission. Il peut néanmoins être calculé au fil de l’eau, puisque les données passent déjà par les buffers, et servir de métadonnée facultative pour :
 
-générer un UUID ou identifiant aléatoire 64 bits ;
-créer par exemple /.u_91A72F730D8B3A11 ;
-recevoir le flux HTTP ;
-écrire progressivement le temporaire ;
-vérifier que le transfert est complet ;
-vérifier la taille si elle est connue ;
-flush() puis close() ;
-renommer vers le fichier définitif ;
-mettre à jour le catalogue RAM.
+- l’affichage et le diagnostic ;
+- la comparaison ou une éventuelle déduplication ;
+- un futur contrôle de bout en bout, si le navigateur calcule aussi le SHA attendu.
 
-En cas de coupure réseau ou reset, le fichier destination précédent doit rester intact.
+Le SHA d’un fichier téléversé pendant l’uptime peut être connu immédiatement. Pour les fichiers découverts au démarrage, utiliser `hashValid = false` et ne calculer le hash qu’à la demande.
 
-Les temporaires résiduels peuvent être détectés et supprimés au démarrage.
+## 📚 Catalogue des fichiers
 
-Gérer les collisions lorsque deux uploads ciblent simultanément le même nom final.
+Au démarrage, scanner LittleFS et construire un catalogue en RAM. Il n’est pas nécessaire de créer un index persistant supplémentaire pour la première version : **LittleFS reste la source de vérité**, et le catalogue est une vue enrichie volatile.
 
-8. PSRAM, multicœur et uploads multiples
+```cpp
+FileInfo {
+  name,
+  size,
+  modifiedUtcMs,
+  sha256,
+  hashValid
+}
+```
 
-Utiliser éventuellement deux buffers PSRAM par upload :
+## 🕒 Gestion du temps
 
-2 × 32 Kio ;
-ou 2 × 64 Kio.
+L’ESP32 ne travaille qu’en **UTC**. Le navigateur fournit l’heure Unix en millisecondes avec `Date.now()` ; par exemple via `POST /api/time` et un champ `utcMs`. Le firmware peut ensuite appeler `settimeofday()`.
 
-Architecture :
+| Couche | Règle |
+|---|---|
+| Stockage et protocole | UTC |
+| Contrôleur ESP32 | UTC uniquement, sans fuseau ni heure d’été |
+| Présentation locale | Conversion dans le navigateur |
 
-plusieurs producteurs HTTP ;
-plusieurs sessions d'upload ;
-double buffering ;
-queues FreeRTOS bornées ;
-back-pressure lorsque les buffers sont occupés ;
-un writer LittleFS sérialisé.
+Pour afficher une date localement, le navigateur peut utiliser `new Date(timestamp).toLocaleString()`.
 
-Les deux cœurs du S3 permettent de découpler réseau et stockage, mais il ne faut pas chercher à paralléliser physiquement les écritures Flash.
+### Horodatages volatils
 
-La Flash/LittleFS reste le goulot commun.
+Au démarrage, les fichiers découverts ont `modifiedUtcMs = 0`, ce qui signifie **date inconnue** : ne pas afficher cette valeur comme le 1er janvier 1970. Lorsqu’un fichier est modifié après synchronisation de l’heure, le catalogue RAM reçoit `modifiedUtcMs = nowUtcMs()`. Cette date reste volatile et redevient inconnue après redémarrage. Si le fichier est modifié avant la synchronisation, sa date reste `0`.
 
-9. SHA-256
+## 🧑‍💻 Répartition des responsabilités
 
-Le SHA-256 n'est pas nécessaire pour assurer l'intégrité normale de HTTP/TCP.
+| Navigateur | ESP32 |
+|---|---|
+| Expérience utilisateur et rendu | Wi-Fi / SoftAP et serveur HTTP |
+| Glisser-déposer et téléversements multiples | LittleFS et API |
+| Progression, tri et filtrage | Téléversements, téléchargements et transactions |
+| Formatage des tailles et dates locales | Catalogue RAM et synchronisation UTC |
+| Prévisualisation et éventuellement SHA côté client | Recovery et buffers PSRAM |
 
-TCP assure déjà transport, ordre, retransmission et détection des erreurs.
+## 👀 Prévisualisation
 
-Le SHA peut néanmoins être calculé au fil de l'eau puisque les données passent déjà dans les buffers.
+Rester volontairement léger pour la première version :
 
-Il devient une métadonnée facultative pour :
+| Format | Prévisualisation envisagée |
+|---|---|
+| PNG, JPEG, GIF, WebP | Image native du navigateur |
+| TXT, LOG, CSV | Texte dans un élément `<pre>` |
+| JSON | `JSON.parse()` puis `JSON.stringify(..., null, 2)` |
+| XML | Texte brut ou `DOMParser` natif |
+| TOML, YAML | Texte brut |
+| PDF, BIN, ZIP, etc. | Téléchargement uniquement |
 
-affichage ;
-diagnostic ;
-comparaison ;
-déduplication future ;
-contrôle E2E futur si le navigateur calcule également le SHA attendu.
+Ne pas embarquer de bibliothèque lourde uniquement pour obtenir des prévisualisations sophistiquées.
 
-Pour un fichier uploadé pendant l'uptime, son SHA peut donc être connu immédiatement.
+## 🏗️ Architecture cible
 
-Pour les fichiers découverts au boot :
+| Composant | Responsabilités et contenu |
+|---|---|
+| **Firmware / flash programme** | Serveur HTTP, API, LittleFS, moteur upload/download, transactions, catalogue RAM, gestion UTC et `index.htm` minimal/recovery en `PROGMEM` |
+| **LittleFS** | Fichiers utilisateur, `/.sys_app.js.gz`, `/.sys_app.css.gz`, autres ressources WebUI compressées et temporaires `.u_*` |
+| **PSRAM** | Buffers de transfert, notamment le double buffering des téléversements |
+| **Navigateur** | Application enrichie, rendu, prévisualisation, glisser-déposer, concurrence des téléversements et présentation locale des dates |
 
-hashValid = false
+> **Principe directeur :** l’interface minimale est déjà pleinement fonctionnelle en HTML pur. JavaScript ne la remplace pas : il l’enrichit lorsqu’il est disponible.
 
-et le SHA peut être calculé seulement à la demande.
+## ➡️ Prochaine étape
 
-10. Catalogue des fichiers en RAM
-
-Au démarrage :
-
-scanner LittleFS ;
-construire un catalogue RAM ;
-ne pas créer initialement d'index persistant supplémentaire.
-
-Conceptuellement :
-
-FileInfo { name, size, modifiedUtcMs, sha256, hashValid }
-
-LittleFS reste la vérité persistante.
-
-Le catalogue RAM est une vue enrichie volatile.
-
-11. Temps : UTC uniquement sur l'ESP32
-
-Le contrôleur ne travaille qu'en UTC.
-
-Le navigateur fournit l'heure avec :
-
-Date.now()
-
-qui correspond à un Unix Epoch en millisecondes.
-
-Par exemple :
-
-POST /api/time
-
-avec utcMs.
-
-L'ESP32 utilise alors settimeofday().
-
-Aucune timezone ni DST côté firmware.
-
-Règle :
-
-stockage = UTC ;
-protocole = UTC ;
-contrôleur = UTC ;
-conversion locale = uniquement navigateur.
-
-Le navigateur peut utiliser :
-
-new Date(timestamp).toLocaleString()
-
-pour la présentation locale.
-
-12. Timestamps fichiers volatils
-
-Au boot, tous les fichiers découverts ont :
-
-modifiedUtcMs = 0
-
-0 signifie :
-
-date inconnue
-
-Elle n'est donc pas affichée.
-
-Lorsque l'ESP dispose d'une heure valide et qu'un fichier est modifié/uploadé :
-
-modifiedUtcMs = nowUtcMs()
-
-La valeur est conservée uniquement dans le catalogue RAM.
-
-Après reboot, elle redevient 0.
-
-Si une modification intervient avant synchronisation de l'heure, sa date reste 0.
-
-Ne jamais afficher artificiellement le 01/01/1970.
-
-13. Responsabilités du navigateur
-
-Faire effectuer le maximum de travail à la machine cliente :
-
-UX ;
-drag & drop ;
-uploads multiples ;
-progress bars ;
-tri ;
-filtrage ;
-formatage des tailles ;
-conversion UTC → heure locale ;
-prévisualisation ;
-éventuellement SHA côté client.
-
-L'ESP32 conserve les tâches déterministes :
-
-Wi-Fi / SoftAP ;
-serveur HTTP ;
-LittleFS ;
-API ;
-uploads/downloads ;
-transactions filesystem ;
-catalogue RAM ;
-temps UTC ;
-synchronisation ;
-recovery ;
-buffers PSRAM.
-14. Preview fichiers
-
-Rester volontairement léger.
-
-V1 :
-
-PNG/JPEG/GIF/WebP → image native ;
-TXT/LOG/CSV → <pre> ;
-JSON → JSON.parse() + JSON.stringify(..., null, 2) ;
-XML → texte ou DOMParser natif ;
-TOML/YAML → texte brut ;
-PDF/BIN/ZIP/etc. → download uniquement.
-
-Ne pas embarquer des librairies lourdes uniquement pour obtenir des previews sophistiquées.
-
-15. Architecture finale
-
-Firmware / flash programme :
-
-serveur HTTP ;
-API ;
-LittleFS ;
-moteur upload/download ;
-gestion transactions ;
-catalogue RAM ;
-gestion UTC ;
-index.htm minimal/recovery en PROGMEM.
-
-LittleFS :
-
-fichiers utilisateur ;
-.sys_app.js.gz ;
-.sys_app.css.gz ;
-éventuels autres assets WebUI compressés ;
-fichiers temporaires .u_*.
-
-PSRAM :
-
-buffers de transfert ;
-notamment double buffers des uploads.
-
-Navigateur :
-
-application riche ;
-rendu ;
-preview ;
-drag & drop ;
-concurrence des uploads ;
-présentation locale des dates.
-
-Principe directeur :
-
-L'interface minimale est déjà parfaitement fonctionnelle en HTML pur. JavaScript ne remplace pas cette interface : il l'enrichit lorsqu'il est disponible.
-
-La prochaine étape est de transformer cette architecture en spécification technique puis prototype fonctionnel C++ pour ESP32-S3 + HTML/CSS/JS, en vérifiant précisément les contraintes des API Arduino-ESP32/ESP-IDF, du serveur HTTP retenu et de LittleFS.
+Transformer cette architecture en spécification technique, puis en prototype fonctionnel **C++ pour ESP32-S3** avec HTML/CSS/JavaScript, en vérifiant précisément les contraintes des API Arduino-ESP32 et/ou ESP-IDF utilisées.
