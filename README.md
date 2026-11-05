@@ -1,8 +1,5 @@
 # 🌐 WebShare
 
-> **Gestionnaire de fichiers Web léger pour ESP32-S3 et LittleFS**  
-> Une idée en phase de conception, développée avec Copilot.
-
 WebShare vise à rendre les fichiers d’un ESP32 accessibles depuis un navigateur, y compris lorsque l’appareil fonctionne en **Wi-Fi SoftAP sans connexion Internet**. Le projet privilégie une interface de secours toujours disponible et une interface enrichie lorsqu’elle peut être chargée.
 
 ## 🧭 Sommaire
@@ -50,11 +47,11 @@ LittleFS est considéré comme un **espace de noms plat**. Exemples de fichiers 
 /.u_<UUID>
 ```
 
-| Préfixe | Rôle | Interface enrichie | Mode recovery |
-|---|---|---:|---:|
-| `.sys_*` | Ressources système de la WebUI | Masquées normalement | Affichées |
-| `.u_*` | Fichiers temporaires de téléversement | Masqués normalement | Affichés |
-| Autres | Fichiers utilisateur | Affichés | Affichés |
+| Préfixe  | Rôle                                  | Interface enrichie   | Mode recovery |
+|----------|---------------------------------------|---------------------:|--------------:|
+| `.sys_*` | Ressources système de la WebUI        | Masquées normalement | Affichées     |
+| `.u_*`   | Fichiers temporaires de téléversement | Masqués normalement  | Affichés      |
+| Autres   | Fichiers utilisateur                  | Affichés             | Affichés      |
 
 ## 🖥️ Interface Web
 
